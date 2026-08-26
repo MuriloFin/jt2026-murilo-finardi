@@ -1,0 +1,1132 @@
+USUÁRIO
+Estou no Hackathon do processo trainee da Seazone. O desafio é analisar dados do mercado imobiliário de Itapema/SC. Em anexo estão o arquivo index com as perguntas e os CSVs com os dados.
+
+A entrega será avaliada em três critérios:
+
+- **45%** - Raciocínio e qualidade da análise: a recomendação se sustenta nos dados? Os critérios escolhidos fazem sentido? Inclui posição sobre a tese dos compactos no Centro.
+- **30%** - Como trabalhei com IA: iteração, persistência diante de obstáculos e senso crítico sobre o que a IA devolveu.
+- **25%** - Comunicação: clareza, síntese e defesa da decisão em vídeo de 3 minutos.
+
+Para cada pergunta, quero que você:
+
+1. Explique o raciocínio antes de calcular
+2. Mostre o código utilizado
+3. Apresente o resultado com interpretação de negócio — não só o número
+4. Aponte limitações ou premissas assumidas
+
+A análise deve refletir os valores da Seazone: foco em fatos e dados, proatividade (vá além do que foi perguntado quando fizer sentido) e entrega caprichada.
+
+Ao final, me avise para montarmos juntos um PDF executivo para apresentação em vídeo.
+
+ASSISTENTE
+Vou estruturar isso como uma análise defensável de investimento, não só como uma sequência de contas: primeiro valido a qualidade/estrutura das bases e como elas se conectam; depois respondo às 4 perguntas com critérios explícitos, testes de robustez e, por fim, confronto diretamente a tese “compactos no Centro”.
+
+ASSISTENTE
+Já apareceu um ponto importante de metodologia: `Price_AV` não traz “receita realizada” pronta. Ele funciona como snapshots de calendário/preço em 06/01, 07/01 e 20/01/2025. Então eu não vou chamar soma de preços de “receita” sem critério; vou construir um **proxy de bookings/revenue pickup** pelas noites que estavam disponíveis em 07/01 e deixaram de estar em 20/01, usando o último preço anunciado antes de desaparecerem. Isso é bem mais defensável do que assumir ocupação ou receita observada.
+
+ASSISTENTE
+O primeiro achado já desafia a tese interna: no recorte com snapshots comparáveis, **Centro 1 quarto** tem receita-proxy mediana de ~R$ 10,8 mil em 77 dias, enquanto **Meia Praia 1 quarto** chega a ~R$ 14,3 mil com preço de compra mediano muito parecido (~R$ 890 mil vs. ~R$ 878 mil). Ou seja: a parte “compacto” parece promissora, mas **“no Centro” ainda não está se sustentando**. Vou agora testar se isso resiste a amostra, outliers e outros critérios de retorno.
+
+ASSISTENTE
+A análise de drivers também trouxe um sinal útil: o modelo consegue explicar muito melhor **preço/ADR** do que ocupação. Capacidade e qualidade do produto puxam preço; já ocupação é bem mais “ruidosa”. Em particular, **vista para o mar aparece associada a ~+9% de diária e +5 p.p. de ocupação**, e **acesso à praia a ~+5 p.p. de ocupação**, controlando pelas demais variáveis. Isso é um argumento mais acionável do que simplesmente “mais quartos = melhor”.
+
+ASSISTENTE
+Sim — e já dá para montar uma tese bem defensável. O próprio desafio deixa “melhor”, “perfil” e “localização” abertos e exige explicitamente uma posição sobre a tese de studios/1 quarto no Centro. Então eu usaria essa liberdade para definir **“melhor investimento” como equilíbrio entre geração de receita, retorno sobre o capital, robustez da amostra e escalabilidade da tese**.
+
+## 0. Antes das perguntas: como tratei os dados
+
+O primeiro problema metodológico é importante: `Price_AV_Itapema.csv` **não contém uma coluna de receita ou reserva realizada**. Ele contém datas futuras que aparecem disponíveis, com seus respectivos preços, em snapshots feitos em 06/01, 07/01 e 20/01/2025.
+
+Encontrei:
+
+| Base | Registros |
+|---|---:|
+| Details | 4.441 anúncios Airbnb |
+| Mesh | 4.441 anúncios |
+| Price_AV | 118.839 linhas / 1.005 imóveis |
+| VivaReal | 8.329 anúncios |
+| Hosts | 4.440 registros |
+| Imóveis observados tanto em 07/01 quanto em 20/01 | **657** |
+
+Para não inventar uma “receita real”, construí dois indicadores.
+
+**1. Receita-proxy de 77 dias**
+
+Uso o intervalo comum entre os snapshots: **20/01 a 06/04 = 77 noites**.
+
+Para cada imóvel:
+
+`ocupação_proxy = noites indisponíveis / 77`
+
+e:
+
+`receita_proxy = noites indisponíveis × mediana da diária observada`
+
+A ausência de uma data no calendário é interpretada como indisponibilidade. Isso **pode ser reserva, mas também bloqueio do proprietário**, portanto vou sempre chamar isso de **proxy**, não receita realizada.
+
+**2. Booking pickup entre 07/01 e 20/01**
+
+Se uma noite:
+
+- estava disponível em 07/01;
+- e desapareceu em 20/01;
+
+trato como um sinal de nova reserva/indisponibilidade durante esses 13 dias e uso o preço observado em 07/01.
+
+Isso funciona como teste de robustez do primeiro indicador.
+
+### Código-base
+
+```python
+import pandas as pd
+import numpy as np
+
+details = pd.read_csv("Details_Itapema.csv")
+mesh = pd.read_csv("Mesh_Ids_Data_Itapema.csv")
+price = pd.read_csv("Price_AV_Itapema.csv")
+viva = pd.read_csv("VivaReal_Itapema.csv")
+hosts = pd.read_csv("Hosts_ids_Itapema.csv")
+
+price["date"] = pd.to_datetime(price["date"])
+price["aquisition_date"] = pd.to_datetime(price["aquisition_date"])
+price["acq_day"] = price["aquisition_date"].dt.normalize()
+
+master = details.merge(
+    mesh[["airbnb_listing_id", "suburb"]],
+    on="airbnb_listing_id",
+    how="left"
+)
+
+d7 = pd.Timestamp("2025-01-07")
+d20 = pd.Timestamp("2025-01-20")
+start = pd.Timestamp("2025-01-20")
+end = pd.Timestamp("2025-04-06")
+n_days = (end - start).days + 1  # 77 dias
+
+ids_7 = set(price.loc[price.acq_day == d7, "airbnb_listing_id"])
+ids_20 = set(price.loc[price.acq_day == d20, "airbnb_listing_id"])
+ids_both = ids_7 & ids_20
+
+p7 = price[
+    (price.acq_day == d7) &
+    (price.airbnb_listing_id.isin(ids_both)) &
+    (price.date.between(start, end))
+]
+
+p20 = price[
+    (price.acq_day == d20) &
+    (price.airbnb_listing_id.isin(ids_both)) &
+    (price.date.between(start, end))
+]
+
+rows = []
+
+for listing_id in ids_both:
+
+    x7 = p7[p7.airbnb_listing_id == listing_id]
+    x20 = p20[p20.airbnb_listing_id == listing_id]
+
+    available_7 = set(x7.date)
+    available_20 = set(x20.date)
+
+    disappeared = available_7 - available_20
+
+    price_7 = dict(zip(x7.date, x7.price))
+
+    pickup_revenue = sum(price_7[d] for d in disappeared)
+
+    all_prices = pd.concat([x7.price, x20.price])
+    median_rate = all_prices.median()
+
+    unavailable_20 = n_days - len(available_20)
+    occupancy_proxy = unavailable_20 / n_days
+    revenue_proxy = unavailable_20 * median_rate
+
+    rows.append({
+        "airbnb_listing_id": listing_id,
+        "median_rate": median_rate,
+        "occupancy_proxy": occupancy_proxy,
+        "revenue_proxy_77": revenue_proxy,
+        "pickup_revenue_13d": pickup_revenue
+    })
+
+metrics = pd.DataFrame(rows).merge(
+    master,
+    on="airbnb_listing_id",
+    how="left"
+)
+```
+
+---
+
+# 1. Qual o melhor perfil de imóvel?
+
+## Raciocínio
+
+Aqui eu evitaria simplesmente perguntar “qual imóvel gera mais receita?”.
+
+Um apartamento de 4 quartos naturalmente pode faturar mais, mas também custa muito mais para comprar. Como a pergunta é **perfil para investir**, meu critério é:
+
+**receita + preço de aquisição + ocupação + tamanho da amostra.**
+
+Também não quero recomendar um segmento com ótimo resultado baseado em 2 ou 3 imóveis.
+
+### Resultado principal
+
+Entre os segmentos mais relevantes:
+
+| Segmento Airbnb | n Airbnb | Receita-proxy 77d | Ocupação-proxy | Compra mediana | Run-rate bruto anualizado* |
+|---|---:|---:|---:|---:|---:|
+| **Meia Praia — 1Q apto** | 14 | R$ 14,3k | 40,9% | R$ 877,5k | **7,7%** |
+| **Meia Praia — 2Q apto** | **104** | **R$ 16,4k** | **48,7%** | **R$ 1,07 mi** | **7,2%** |
+| Meia Praia — 3Q apto | 266 | R$ 20,7k | 43,5% | R$ 1,88 mi | 5,2% |
+| Centro — 1Q apto | 70 | R$ 10,8k | 29,9% | R$ 890k | 5,7% |
+| Centro — 2Q apto | 51 | R$ 14,3k | 37,7% | R$ 1,12 mi | 6,0% |
+| Morretes — 2Q apto | 34 | R$ 13,0k | 33,1% | R$ 790k | 7,8% |
+
+*Run-rate = resultado dos 77 dias × 365/77 / preço de compra. **Não é uma projeção anual de receita**, porque contém sazonalidade.
+
+### Minha decisão
+
+**O melhor perfil risk-adjusted é apartamento de 2 quartos em Meia Praia, com capacidade em torno de 6 hóspedes.**
+
+Por quê?
+
+O 1 quarto de Meia Praia tem o maior retorno pontual entre os candidatos que considero interessantes, 7,7% versus 7,2%, mas há apenas **14 Airbnbs** no recorte comparável.
+
+Já o 2 quartos tem:
+
+- 104 Airbnbs comparáveis;
+- 241 anúncios de venda;
+- ocupação-proxy de 48,7%;
+- R$ 16,4 mil de receita-proxy;
+- preço de compra ainda em torno de R$ 1,07 milhão.
+
+Ou seja, eu trocaria **0,5 p.p. de retorno estimado por uma evidência muito mais robusta**.
+
+Isso é uma escolha de investimento, não simplesmente de maximização de uma célula do Excel.
+
+### Outro insight
+
+O 3 quartos gera cerca de **27% mais receita** que o 2 quartos:
+
+R$ 20,7k vs. R$ 16,4k.
+
+Mas custa aproximadamente **76% mais**:
+
+R$ 1,88 mi vs. R$ 1,07 mi.
+
+Então a receita cresce, mas o capital necessário cresce muito mais rápido.
+
+## Código
+
+```python
+airbnb_segment = (
+    metrics[
+        (metrics["listing_type"] == "apartamento") &
+        (metrics["suburb"].isin(["Meia Praia", "Centro", "Morretes"]))
+    ]
+    .groupby(["suburb", "number_of_bedrooms"])
+    .agg(
+        n_airbnb=("airbnb_listing_id", "count"),
+        revenue_77=("revenue_proxy_77", "median"),
+        occupancy=("occupancy_proxy", "median"),
+        daily_rate=("median_rate", "median"),
+        pickup=("pickup_revenue_13d", "median")
+    )
+    .reset_index()
+)
+
+viva_clean = viva.drop_duplicates("listing_id").copy()
+
+viva_clean["price_per_sqm"] = (
+    viva_clean["sale_price"] /
+    viva_clean["usable_area"].replace(0, np.nan)
+)
+
+sales = (
+    viva_clean[
+        (viva_clean["listing_type"] == "apartamento") &
+        (viva_clean["usable_area"].between(20, 500)) &
+        (viva_clean["sale_price"].between(100_000, 20_000_000))
+    ]
+    .groupby(["suburb", "bedrooms"])
+    .agg(
+        n_sales=("listing_id", "count"),
+        purchase_price=("sale_price", "median"),
+        area=("usable_area", "median")
+    )
+    .reset_index()
+)
+
+comparison = airbnb_segment.merge(
+    sales,
+    left_on=["suburb", "number_of_bedrooms"],
+    right_on=["suburb", "bedrooms"],
+    how="left"
+)
+
+comparison["yield_77"] = (
+    comparison["revenue_77"] /
+    comparison["purchase_price"]
+)
+
+comparison["annualized_run_rate"] = (
+    comparison["yield_77"] * 365 / 77
+)
+```
+
+## Limitações
+
+A principal é que o segmento de 1 quarto em Meia Praia tem apenas 14 imóveis no painel comparável.
+
+E a tese de **studio especificamente não pode ser validada**: na base completa encontrei somente **2 studios no Centro**, e nenhum deles aparece no painel de preço comparável 07/01–20/01. Em Meia Praia são 29 na base completa e apenas 4 no painel.
+
+Portanto, qualquer conclusão do tipo “studios são vencedores” seria ir além do que os dados suportam.
+
+---
+
+# 2. Qual a melhor localização em termos de receita?
+
+## Raciocínio
+
+Aqui o critério muda: a pergunta diz explicitamente **“em termos de receita”**.
+
+Portanto primeiro comparo receita, não preço de compra.
+
+Também criei um corte mínimo de amostra. Não faz sentido declarar Sertão do Trombudo campeão porque existe 1 imóvel com receita alta.
+
+Considerando regiões com escala suficiente, a resposta fica bastante clara.
+
+## Resultado
+
+| Região | n | Receita-proxy mediana | Ocupação-proxy | Diária mediana |
+|---|---:|---:|---:|---:|
+| **Meia Praia** | **421** | **R$ 19,5k** | **45,5%** | **R$ 625** |
+| Centro | 161 | R$ 14,2k | 36,4% | R$ 580 |
+| Morretes | 54 | R$ 14,2k | 39,6% | R$ 500 |
+
+### Interpretação
+
+**Meia Praia é a melhor localização em receita.**
+
+A receita-proxy mediana é aproximadamente **37% superior ao Centro**:
+
+R$ 19.500 vs. R$ 14.238.
+
+E isso ocorre pelos dois componentes da receita:
+
+- diária: R$ 625 vs. R$ 580 → **+7,8%**
+- ocupação-proxy: 45,5% vs. 36,4% → **+9,1 p.p.**
+
+Portanto, o resultado não parece vir apenas de imóveis maiores cobrando mais. Meia Praia combina **preço maior com maior utilização do calendário**.
+
+Também fiz bootstrap para evitar que a conclusão dependesse apenas da mediana pontual. O intervalo de 95% para a diferença de receita mediana Meia Praia – Centro ficou aproximadamente entre **+R$ 3,6 mil e +R$ 8,0 mil**.
+
+O teste não-paramétrico Mann-Whitney também encontrou diferença muito forte (`p < 0,001`).
+
+## Código
+
+```python
+location = (
+    metrics.groupby("suburb")
+    .agg(
+        n=("airbnb_listing_id", "count"),
+        revenue=("revenue_proxy_77", "median"),
+        occupancy=("occupancy_proxy", "median"),
+        daily_rate=("median_rate", "median"),
+        pickup=("pickup_revenue_13d", "median")
+    )
+    .reset_index()
+)
+
+# Evito "campeões" baseados em amostras muito pequenas
+location_robust = (
+    location[location["n"] >= 30]
+    .sort_values("revenue", ascending=False)
+)
+
+print(location_robust)
+```
+
+Teste de robustez:
+
+```python
+from scipy.stats import mannwhitneyu
+import numpy as np
+
+meia = metrics.loc[
+    metrics["suburb"] == "Meia Praia",
+    "revenue_proxy_77"
+].values
+
+centro = metrics.loc[
+    metrics["suburb"] == "Centro",
+    "revenue_proxy_77"
+].values
+
+rng = np.random.default_rng(42)
+diffs = []
+
+for _ in range(10_000):
+    meia_sample = rng.choice(meia, len(meia), replace=True)
+    centro_sample = rng.choice(centro, len(centro), replace=True)
+
+    diffs.append(
+        np.median(meia_sample) -
+        np.median(centro_sample)
+    )
+
+print(np.percentile(diffs, [2.5, 50, 97.5]))
+
+u, p = mannwhitneyu(meia, centro)
+print(p)
+```
+
+## Limitações
+
+Bairro não captura micro-localização.
+
+Dois imóveis de Meia Praia podem ter distâncias muito diferentes da orla. Latitude e longitude estão disponíveis, então, com mais tempo, eu transformaria isso em:
+
+- distância da praia;
+- distância de polos comerciais;
+- distância de restaurantes;
+- distância de pontos turísticos.
+
+Isso provavelmente seria muito mais informativo do que apenas o nome do bairro.
+
+---
+
+# 3. Quais características explicam as melhores receitas?
+
+## Raciocínio
+
+Aqui eu quis evitar uma armadilha comum:
+
+> “Imóveis com piscina ganham mais, então piscina causa receita.”
+
+Isso mistura tamanho, localização, padrão do prédio, preço etc.
+
+Por isso fiz duas coisas:
+
+1. análise descritiva;
+2. regressões multivariadas separando **diária** e **ocupação**.
+
+Isso é importante porque:
+
+**Receita ≈ diária × ocupação.**
+
+E uma característica pode aumentar a diária enquanto diminui ocupação.
+
+## Principais achados
+
+### 1. Capacidade aumenta principalmente a diária
+
+Controlando pelas demais características:
+
+- cada quarto adicional aparece associado a aproximadamente **+22% na diária**;
+- banheiro adicional: aproximadamente **+11%**;
+- hóspede adicional: aproximadamente **+4%**.
+
+Isso explica por que imóveis grandes dominam quando olhamos apenas receita bruta.
+
+Mas, como vimos anteriormente, o custo de compra também cresce muito.
+
+---
+
+### 2. Vista para o mar é um sinal muito interessante
+
+Controlando pelas outras variáveis, a presença de indicação de vista para o mar aparece associada a aproximadamente:
+
+- **+9% de diária**
+- **+5,4 p.p. de ocupação-proxy**
+
+É uma característica rara que parece atuar nos **dois lados da equação**.
+
+Para a recomendação de produto, eu priorizaria isso.
+
+---
+
+### 3. Acesso à praia parece atuar mais em ocupação
+
+`beach_access` apresentou aproximadamente:
+
+**+5,4 p.p. de ocupação-proxy.**
+
+Isso reforça o racional de Meia Praia e sugere que a micro-localização em relação à orla merece investigação adicional.
+
+---
+
+### 4. Piscina é um ótimo exemplo de por que olhar apenas correlação é perigoso
+
+O modelo encontrou aproximadamente:
+
+- **+39% na diária**
+- **-9 p.p. de ocupação**
+
+Minha interpretação não seria “piscina prejudica ocupação”.
+
+Provavelmente piscina está identificando imóveis/prédios de padrão superior, que cobram significativamente mais e aceitam uma ocupação menor.
+
+É um **trade-off de posicionamento de preço**, e não uma relação causal comprovada.
+
+---
+
+### 5. Reputação operacional também importa
+
+Na análise descritiva:
+
+| Indicador | Receita mediana |
+|---|---:|
+| Superhost | **R$ 20,5k** |
+| Não Superhost | R$ 15,5k |
+| Guest Favorite | **R$ 18,6k** |
+| Não Guest Favorite | R$ 15,3k |
+
+Superhosts também apresentam ocupação-proxy próxima de **52%**, contra **35%** entre não-Superhosts.
+
+Mas eu classificaria isso como **driver operacional/reputacional**, não como característica estrutural do imóvel.
+
+Para a Seazone, isso é especialmente interessante porque gestão é algo sobre o qual ela pode agir.
+
+## Código
+
+Para transformar amenities:
+
+```python
+import ast
+import unicodedata
+
+def parse_list(value):
+    if pd.isna(value):
+        return []
+    try:
+        return ast.literal_eval(value)
+    except:
+        return []
+
+def normalize_text(value):
+    return (
+        unicodedata.normalize("NFKD", str(value))
+        .encode("ascii", "ignore")
+        .decode()
+        .lower()
+    )
+
+metrics["amenity_list"] = metrics["amenities"].apply(parse_list)
+
+metrics["amenity_text"] = metrics["amenity_list"].apply(
+    lambda x: " | ".join(normalize_text(i) for i in x)
+)
+
+metrics["amenity_count"] = metrics["amenity_list"].str.len()
+
+metrics["sea_view"] = metrics["amenity_text"].str.contains(
+    "vista para o mar|vista do mar|vista pro mar"
+)
+
+metrics["beach_access"] = metrics["amenity_text"].str.contains(
+    "acesso a praia"
+)
+
+metrics["pool"] = metrics["amenity_text"].str.contains("piscina")
+metrics["balcony"] = metrics["amenity_text"].str.contains("varanda")
+```
+
+Regressões:
+
+```python
+import statsmodels.formula.api as smf
+
+adr_model = smf.ols(
+    """
+    np.log(median_rate) ~
+        number_of_bedrooms +
+        number_of_guests +
+        number_of_bathrooms +
+        amenity_count +
+        sea_view +
+        beach_access +
+        pool +
+        balcony +
+        C(suburb) +
+        C(listing_type)
+    """,
+    data=metrics
+).fit(cov_type="HC3")
+
+occupancy_model = smf.ols(
+    """
+    occupancy_proxy ~
+        number_of_bedrooms +
+        number_of_guests +
+        number_of_bathrooms +
+        amenity_count +
+        sea_view +
+        beach_access +
+        pool +
+        balcony +
+        C(suburb) +
+        C(listing_type)
+    """,
+    data=metrics
+).fit(cov_type="HC3")
+
+print(adr_model.summary())
+print(occupancy_model.summary())
+```
+
+## Uma limitação importante que eu mostraria no hackathon
+
+O modelo de ADR chega a aproximadamente **R² = 40%**.
+
+O de ocupação, porém, fica perto de apenas **8%**.
+
+Isso é um resultado — não um fracasso do modelo.
+
+Minha interpretação de negócio seria:
+
+> Os atributos observados conseguem explicar razoavelmente o preço que o imóvel consegue cobrar, mas explicam pouco da ocupação. Boa parte da demanda provavelmente depende de fatores não capturados pela base, como micro-localização, estratégia de pricing, sazonalidade, qualidade do prédio, antecedência da reserva e bloqueios de calendário.
+
+Isso demonstra senso crítico sobre o que a IA/modelo devolveu.
+
+---
+
+# 4. Se a Seazone fosse investir hoje, o que eu compraria?
+
+## Minha recomendação
+
+### **Apartamento de 2 quartos em Meia Praia, capacidade ~6 hóspedes, priorizando acesso à praia e, quando economicamente viável, vista para o mar.**
+
+Eu procuraria algo próximo do perfil mediano do mercado de venda:
+
+**~85 m² e preço de aquisição em torno de R$ 1,07 milhão.**
+
+Não escolheria simplesmente o imóvel de maior receita, e também não escolheria automaticamente o segmento de maior yield calculado.
+
+Quero uma tese que seja **repetível**.
+
+### Economia da decisão
+
+Para Meia Praia 2Q:
+
+- 104 Airbnbs comparáveis;
+- 241 imóveis no mercado de venda;
+- preço mediano: **R$ 1,07 mi**
+- receita-proxy de 77 dias: **R$ 16.352**
+- ocupação-proxy: **48,7%**
+- diária mediana: ~**R$ 473**
+
+Retorno bruto observado no período:
+
+\[
+16.352 / 1.070.000 = 1,53\%
+\]
+
+em 77 dias.
+
+Se eu simplesmente anualizar esse run-rate:
+
+\[
+1,53\% \times \frac{365}{77} \approx 7,24\%
+\]
+
+### Portanto:
+
+**Gross yield run-rate ≈ 7,2% a.a.**
+
+Payback bruto teórico:
+
+\[
+1 / 7,24\% \approx 13,8 anos
+\]
+
+Eu colocaria **“run-rate” em letras grandes**, porque não quero vender 7,2% como um forecast anual.
+
+Janeiro–abril inclui parte relevante da temporada de verão de Itapema e provavelmente superestima meses de baixa temporada.
+
+## Código
+
+```python
+purchase_price = 1_070_000
+revenue_77 = 16_352
+
+yield_77 = revenue_77 / purchase_price
+
+annualized_run_rate = yield_77 * (365 / 77)
+
+gross_payback = 1 / annualized_run_rate
+
+print(f"Retorno 77 dias: {yield_77:.2%}")
+print(f"Run-rate anualizado: {annualized_run_rate:.2%}")
+print(f"Payback bruto: {gross_payback:.1f} anos")
+```
+
+Saída:
+
+```text
+Retorno 77 dias: 1.53%
+Run-rate anualizado: 7.24%
+Payback bruto: 13.8 anos
+```
+
+## O que esse retorno NÃO inclui
+
+Não inclui:
+
+- comissão das plataformas;
+- gestão;
+- condomínio;
+- IPTU;
+- manutenção;
+- limpeza;
+- mobília;
+- ITBI/escritura;
+- financiamento;
+- impostos;
+- valorização imobiliária.
+
+Por isso eu chamaria de **gross yield proxy**, nunca de ROI líquido.
+
+---
+
+# E a tese dos compactos no Centro?
+
+Minha conclusão seria:
+
+## **Eu não validaria a tese como formulada.**
+
+Mais precisamente: **os dados dão algum suporte à eficiência de imóveis menores, mas não sustentam que o Centro seja a melhor localização — e não permitem validar studios adequadamente.**
+
+O teste mais justo disponível é comparar 1 quarto com 1 quarto:
+
+| | Centro 1Q | Meia Praia 1Q |
+|---|---:|---:|
+| Airbnb n | 70 | 14 |
+| Receita-proxy | R$ 10,8k | **R$ 14,3k** |
+| Ocupação-proxy | 29,9% | **40,9%** |
+| Diária | R$ 464 | **R$ 495** |
+| Compra mediana | R$ 890k | **R$ 877,5k** |
+| Run-rate bruto | 5,7% | **7,7%** |
+
+O imóvel de 1 quarto em Meia Praia custa praticamente a mesma coisa — na amostra, até ligeiramente menos — e apresenta aproximadamente **33% mais receita-proxy**.
+
+O bootstrap da diferença de receita entre os dois segmentos ainda ficou positivo no limite inferior de 95%, embora eu mantenha cautela porque são somente 14 imóveis de 1 quarto em Meia Praia.
+
+### Minha frase para a banca seria:
+
+> **“Eu rejeito parcialmente a tese inicial. Os dados sugerem que compactos podem, sim, ser eficientes em capital, mas não encontrei evidência de que o Centro seja a melhor região. Quando comparo o mesmo produto, 1 quarto, Meia Praia apresenta maior receita e ocupação com custo de aquisição semelhante. E, por robustez amostral, minha decisão final seria um 2 quartos em Meia Praia.”**
+
+Essa é, para mim, a tese central da apresentação.
+
+---
+
+# O que eu destacaria como uso crítico de IA
+
+Tem um ótimo “rastro de raciocínio” nesta própria análise:
+
+1. A primeira tentação seria somar os preços do `Price_AV` e chamar de receita.
+2. Ao inspecionar a estrutura temporal, vimos que isso não era defensável.
+3. Reformulamos a métrica para disponibilidade + pickup.
+4. Encontramos segmentos aparentemente espetaculares, como Morretes 1Q/3Q, mas rejeitamos a conclusão pela amostra minúscula e falta de confirmação via pickup.
+5. A regressão mostrou R² baixo para ocupação; em vez de forçar uma conclusão, tratamos isso como limitação.
+6. O maior yield pontual não virou automaticamente a recomendação: escolhemos 2Q Meia Praia pela combinação de retorno + evidência + escalabilidade.
+
+Isso conversa diretamente com o critério de avaliação de **iteração, persistência e senso crítico**.
+
+## Minha conclusão executiva em uma frase
+
+**Eu investiria em um apartamento de 2 quartos em Meia Praia: é a combinação mais defensável entre demanda, receita, custo de aquisição e robustez da evidência; os dados não sustentam a tese de que compactos no Centro sejam a melhor aposta.**
+
+A análise-base está fechada. **Agora podemos montar juntos o PDF executivo para o vídeo de 3 minutos**, reduzindo tudo isso a 4–5 gráficos/slides e uma narrativa bem forte de decisão → evidência → tese dos compactos → retorno → limitações.
+
+USUÁRIO
+Agora que concluímos a análise das 4 perguntas, preciso transformar tudo em uma entrega executiva. Me ajude a:
+
+**1. Montar um PDF executivo** com as seguintes seções:
+
+- Capa com título, cidade (Itapema/SC), data e meu nome completo Murilo Favoretto Finardi
+- Contexto do desafio (1 parágrafo)
+- Metodologia: quais dados usei e por quê
+- Respostas às 4 perguntas com gráficos ou tabelas de apoio
+- Posição clara sobre a tese dos compactos no Centro (confirmo ou refuto, com dados)
+- Recomendação final de investimento com estimativa de retorno
+- O que faria com mais uma semana
+
+**2. Garantir que a entrega esteja caprichada:**
+
+- Linguagem executiva, direta e defensável
+- Toda afirmação sustentada por um dado
+- Visual limpo e hierarquia clara
+- README.md bem estruturado com link do vídeo na primeira linha
+- relatorio.md com a recomendação final escrita
+- Pasta ai-log/ com a sessão exportada em .md
+
+O PDF será usado como apoio visual no vídeo de 3 minutos, precisa ser escaneável em segundos, com os números mais importantes em destaque.
+
+ASSISTENTE
+Vou transformar a análise em uma entrega “de banca”: PDF curto e visual, com a tese aparecendo cedo; depois deixo o repositório pronto com `README.md`, `relatorio.md` e a estrutura `ai-log/`. Também vou preservar as limitações metodológicas para não vender proxy como receita observada.
+
+ASSISTENTE
+Estou fechando os números novamente direto dos CSVs antes de diagramar. Vou deixar no PDF apenas indicadores que consigo reproduzir: 4.441 listings Airbnb, 118.839 observações de preço, 8.293 anúncios únicos de venda e o painel comparável de 657 imóveis entre 07/01 e 20/01.
+
+ASSISTENTE
+A checagem confirmou a recomendação e ajustou alguns detalhes finos: no modelo multivariado, um quarto adicional está associado a **+20,6% na diária** (não +22%), vista para o mar a **+9,0% na diária e +5,7 p.p. de ocupação**, e acesso à praia a **+5,6 p.p. de ocupação**. Vou usar os valores reproduzidos agora nos arquivos finais.
+
+ASSISTENTE
+O PDF já está diagramado em formato 16:9, pensado para funcionar como apoio de tela no vídeo — a conclusão vem antes do detalhe, e cada pergunta tem um único takeaway visual. Agora estou fechando o pacote do GitHub e fazendo a checagem visual do PDF para garantir que nada ficou cortado ou ilegível.
+
+ASSISTENTE
+Pronto. Montei a entrega com uma linguagem bem mais de **decisão executiva** do que de trabalho acadêmico: conclusão primeiro, números em destaque e as limitações metodológicas preservadas.
+
+- [PDF executivo - 9 páginas, formato 16:9](sandbox:/mnt/data/jt2026-murilo-favoretto-finardi/output/relatorio_executivo_itapema.pdf)
+- [Pacote completo do repositório (.zip)](sandbox:/mnt/data/jt2026-murilo-favoretto-finardi.zip)
+- [README.md](sandbox:/mnt/data/jt2026-murilo-favoretto-finardi/README.md)
+- [relatorio.md](sandbox:/mnt/data/jt2026-murilo-favoretto-finardi/relatorio.md)
+- [Código reproduzível da análise](sandbox:/mnt/data/jt2026-murilo-favoretto-finardi/analise_itapema.py)
+
+O PDF já traz capa com **Murilo Favoretto Finardi**, contexto, metodologia, as quatro respostas, drivers, refutação explícita da tese dos compactos no Centro, recomendação de **2Q em Meia Praia**, retorno estimado de **7,2% a.a. de run-rate bruto** e a seção “o que faria com mais uma semana”.
+
+Também deixei o `README.md` com o espaço do vídeo **na primeira linha**, como o desafio exige.
+
+### Só faltam 2 ações manuais antes de subir no GitHub
+
+1. Substituir o placeholder da primeira linha do `README.md` pelo link real do vídeo no Google Drive e testar em aba anônima.
+2. Exportar **esta sessão inteira do ChatGPT em texto** e colocar o arquivo dentro de `ai-log/`. Eu deixei a pasta e um README de instrução, mas não inventei uma exportação parcial, porque a Seazone pede explicitamente a sessão completa e diz que prints/trechos selecionados não valem.
+
+A narrativa principal que ficou no material é:
+
+**“A evidência favorece Meia Praia 2Q. Compactos podem ser eficientes, mas os dados não sustentam que o Centro seja a melhor localização; e studios têm amostra insuficiente para validação.”**
+
+O próximo passo é montarmos o **roteiro exato dos 3 minutos**, página a página, incluindo o que você fala e o que pode ignorar visualmente para não estourar o tempo.
+
+USUÁRIO
+Ficou excelente, único ponto é que tem uma barra alaranjada  "voando" pg 07. Remova e retorne sem mexer em mais nada.
+
+ASSISTENTE
+Pronto — removi a barra alaranjada da página 07 sem mexer em mais nada.
+
+[Baixar versão corrigida](sandbox:/mnt/data/jt2026-murilo-favoretto-finardi/output/relatorio_executivo_itapema_FINAL_v2.pdf)
+
+USUÁRIO
+Na apresentação que tive sobre a empresa, o fundador enfatizou a questão que eles focam muito em short-stay, ou seja, provavelmente studios, apartamentos pequenos. Isso muda em algo toda a análise que fizemos juntos? Ou a conclusão final de recomendar apartamento de 2 quartos?
+
+ASSISTENTE
+Muda **a forma de defender a conclusão**, mas eu não mudaria automaticamente a recomendação de 2 quartos.
+
+O ponto principal é: **short-stay não é sinônimo de studio**. Short-stay é o modelo de uso; a tipologia pode ser studio, 1Q, 2Q etc. Então, se o fundador enfatizou short-stay, isso reforça que devemos olhar para **eficiência operacional, ocupação, diária e retorno por capital investido** — exatamente o que fizemos.
+
+O que eu ajustaria é a narrativa: em vez de parecer que estamos contrariando a vocação da empresa, eu diria que **os dados de Itapema não mostram que “menor é sempre melhor”**. Eles mostram que compactos podem ser eficientes, mas que, nesta cidade e nesta amostra, o **2Q em Meia Praia entrega uma combinação mais robusta de retorno e escala de evidência**.
+
+A comparação mais importante continua sendo esta:
+
+| Segmento | Run-rate bruto | Amostra comparável | Leitura |
+|---|---:|---:|---|
+| Meia Praia 1Q | **7,7%** | 14 | melhor retorno pontual, evidência frágil |
+| Meia Praia 2Q | **7,2%** | 104 | retorno quase igual, evidência muito mais robusta |
+| Centro 1Q | 5,7% | 70 | pior que Meia Praia |
+| Meia Praia 3Q | 5,2% | 266 | maior receita, mas capital cresce demais |
+
+Então eu manteria o **2Q como recomendação principal**, mas acrescentaria uma nuance importante:
+
+> **“A tese de compactos faz sentido como hipótese estratégica para short-stay, mas os dados disponíveis não são suficientes para escolher studio/1Q como a melhor alocação de capital. O 1Q em Meia Praia tem ótimo sinal de retorno, porém com apenas 14 imóveis comparáveis. Por isso, para uma decisão hoje, eu escolheria 2Q; com mais dados, compactos seriam minha principal tese a aprofundar.”**
+
+Isso, na verdade, pode deixar sua apresentação **mais forte**, porque mostra que você entendeu o negócio da Seazone sem deixar o contexto corporativo atropelar os dados.
+
+Eu faria inclusive uma pequena mudança no pitch. Em vez de:
+
+> “Eu refuto parcialmente a tese dos compactos no Centro.”
+
+Eu diria:
+
+> **“Eu não refuto a lógica dos compactos para short-stay; eu refuto a combinação ‘compactos no Centro’ como melhor tese com os dados disponíveis.”**
+
+Essa distinção é excelente.
+
+E tem mais: se eles perguntarem “mas por que não 1 quarto, se somos uma empresa focada em short-stay?”, sua resposta ideal é:
+
+> **“O 1Q em Meia Praia é, sim, muito promissor e inclusive apresenta o maior run-rate do meu recorte, 7,7%. O motivo de eu recomendar 2Q é confiança estatística: são 104 imóveis comparáveis contra apenas 14. Como decisão de investimento hoje, preferi abrir mão de 0,5 p.p. de retorno estimado por uma tese muito mais comprovada. Se eu tivesse mais dados históricos de 1Q, ele seria o primeiro segmento que eu reavaliaria.”**
+
+Isso mostra **aderência ao negócio + rigor analítico + senso crítico**. Eu não mudaria o PDF nem a conclusão principal por causa dessa informação; mudaria a **defesa verbal**.
+
+USUÁRIO
+Realizei a análise dos dados obtidos, e tenho a seguinte apresentação em pdf. Antes de gravar o vídeo, verifique se minhas conclusões no relatório estão condizentes com o que foi analisado previamente por nós. Aproveite para checar se todos os cálculos estão corretos para realizar a entrega final.
+
+ASSISTENTE
+Sim. Eu refiz a checagem dos cálculos a partir dos CSVs e confrontei com o PDF de 9 páginas. **A conclusão central está sustentada pelos dados e a recomendação de 2 quartos em Meia Praia continua correta.** E visualmente: na versão do PDF que você acabou de anexar, **ainda vejo uma pequena barra/retângulo alaranjado solto na parte superior direita da página 7**. Não afeta a análise, mas eu removeria antes da entrega final.
+
+Fora isso, **eu gravaria o vídeo mantendo a recomendação de 2Q em Meia Praia**. O ponto mais importante na fala é deixar claro que **1Q é uma tese promissora para short-stay, mas a amostra de 14 imóveis não é suficiente para você preferi-la hoje a uma alternativa com 104 observações e retorno quase equivalente**.
+
+USUÁRIO
+não altere nenhum dado da apresentação, remova apenas a barra alaranjada na página 07. Apenas isto  
+
+ASSISTENTE
+Pronto — removi **apenas** a barra alaranjada da página 07. Nenhum dado, texto, número ou gráfico foi alterado.
+
+[Baixar PDF final sem a barra](sandbox:/mnt/data/Analise_Relatorio_Executivo_Itapema_FINAL_sem_barra.pdf)
+
+USUÁRIO
+Meu pitch está assim no momento, como posso reduzi-lo para caber em 3 minutos de vídeo, sem perder conteúdo, ou algo importante?
+
+# Pitch final com indicação de páginas
+
+## [PÁGINA 1 — CAPA]
+
+Olá, eu sou o **Murilo Favoretto Finardi** e, neste desafio, meu objetivo foi responder uma pergunta simples: **se a Seazone fosse investir hoje em Itapema, qual imóvel eu compraria?**
+
+Minha recomendação final é um **apartamento de 2 quartos em Meia Praia, com capacidade próxima de 6 hóspedes**, priorizando acesso à praia e, se o prêmio de compra fizer sentido, vista para o mar.
+
+---
+
+## [PÁGINA 2 — CONTEXTO + RESPOSTA EXECUTIVA]
+
+Antes de chegar nessa conclusão, eu defini “melhor investimento” não como o imóvel que simplesmente fatura mais, mas como aquele que apresenta o melhor equilíbrio entre **geração de receita, retorno sobre o capital, robustez da amostra e repetibilidade da tese**.
+
+É por isso que minha decisão final favorece o **2 quartos em Meia Praia**.
+
+---
+
+## [PÁGINA 3 — METODOLOGIA]
+
+Antes de analisar os resultados, precisei resolver uma limitação importante dos dados.
+
+A base de preços não traz receita realizada diretamente. Ela traz snapshots de preço e disponibilidade.
+
+Então, em vez de assumir que preço disponível era receita, construí uma **receita-proxy**, usando uma janela comparável de 77 dias e tratando noites indisponíveis como sinal de ocupação — sempre reconhecendo que elas também podem representar bloqueios do proprietário.
+
+A análise utilizou mais de **4.400 listings de Airbnb**, cerca de **118 mil observações de preço**, mais de **8.200 anúncios únicos de venda** e um painel final de **657 imóveis comparáveis**.
+
+---
+
+## [PÁGINA 4 — PERGUNTA 1: MELHOR PERFIL]
+
+Na primeira pergunta, o principal trade-off apareceu entre imóveis de 1 e 2 quartos em Meia Praia.
+
+O 1 quarto apresentou um retorno pontual um pouco maior, de **7,7%**, mas com apenas **14 imóveis comparáveis**.
+
+Já o 2 quartos apresentou **7,2% de run-rate bruto**, com **104 Airbnbs comparáveis e 241 anúncios de venda**.
+
+Por isso, para uma decisão de investimento hoje, eu prefiro abrir mão de **0,5 ponto percentual de retorno estimado** em troca de uma evidência muito mais robusta e replicável.
+
+---
+
+## [PÁGINA 5 — PERGUNTA 2: MELHOR LOCALIZAÇÃO]
+
+Em localização, **Meia Praia foi a região mais forte**.
+
+Sua receita-proxy mediana foi de **R$ 19,5 mil**, contra **R$ 14,2 mil no Centro**, uma diferença de aproximadamente **37%**.
+
+Além disso, a ocupação-proxy foi **9,1 pontos percentuais maior**.
+
+Ou seja, Meia Praia não performa melhor apenas por cobrar mais: ela combina **diária maior e maior utilização do calendário**.
+
+---
+
+## [PÁGINA 6 — PERGUNTA 3: DRIVERS DE PERFORMANCE]
+
+Quando analisei os drivers de performance, alguns atributos ajudaram a explicar principalmente a diária e, em menor grau, a ocupação.
+
+Um quarto adicional esteve associado a **20,6% mais diária**.
+
+Vista para o mar apareceu associada a **9% mais diária e 5,7 pontos percentuais de ocupação**, enquanto acesso à praia contribuiu principalmente para ocupação.
+
+Um ponto importante é que o modelo explica muito melhor a variação da diária do que da ocupação. Então eu trato esses resultados como **associações úteis para decisão**, e não como causalidade.
+
+---
+
+## [PÁGINA 7 — TESE DOS COMPACTOS NO CENTRO]
+
+Sobre a tese dos compactos, eu faria uma distinção importante:
+
+**eu não refuto a lógica de compactos para short-stay.**
+
+Pelo contrário, o 1 quarto em Meia Praia é bastante promissor e apresentou o maior run-rate do recorte.
+
+O que os dados não sustentam é a combinação **“compactos no Centro” como a melhor tese**.
+
+Comparando o mesmo produto, de 1 quarto, **Meia Praia gera cerca de 33% mais receita-proxy com preço de compra praticamente igual**.
+
+E studios, especificamente, têm uma amostra pequena demais para uma conclusão segura.
+
+---
+
+## [PÁGINA 8 — PERGUNTA 4: RECOMENDAÇÃO FINAL]
+
+Por isso, minha recomendação continua sendo o **2 quartos em Meia Praia**.
+
+O perfil tem preço mediano de aproximadamente **R$ 1,07 milhão**, receita-proxy de **R$ 16,4 mil em 77 dias**, ocupação de **48,7%** e um **run-rate bruto anualizado de 7,2%**.
+
+O payback bruto teórico fica em aproximadamente **13,8 anos**.
+
+Mas é importante destacar: isso não é uma projeção anual nem um retorno líquido. Ainda não considera custos operacionais e carrega efeito de sazonalidade.
+
+---
+
+## [PÁGINA 9 — PRÓXIMOS PASSOS + USO DE IA]
+
+A IA foi usada como parceira de análise durante todo o processo: para investigar as bases, testar hipóteses, identificar inconsistências e revisar conclusões.
+
+Um exemplo foi perceber que não seria correto tratar o `Price_AV` como receita realizada e reformular a metodologia antes de seguir com a recomendação.
+
+Com mais uma semana, eu avançaria em cinco frentes: **micro-localização, sazonalidade, diferenciação entre reserva e bloqueio, retorno líquido e comparáveis mais precisos de preço de compra**.
+
+E eu aprofundaria especialmente a tese de **1 quarto em Meia Praia**, porque ela apresentou um sinal muito positivo, mas ainda com amostra pequena.
+
+Minha conclusão é:
+
+**a evidência favorece hoje um 2 quartos em Meia Praia. Não porque é simplesmente o maior número da planilha, mas porque apresenta o melhor equilíbrio entre retorno, capital necessário e robustez da evidência — sem descartar que compactos possam se tornar a melhor tese com mais dados.**
+
+ASSISTENTE
+Seu pitch atual está bom em conteúdo, mas está **longo demais para 3 minutos**. Eu reduziria principalmente repetições, listas de números e explicações que já aparecem visualmente no PDF.
+
+A regra seria: **1 mensagem principal por página + 1 ou 2 números que comprovam essa mensagem**.
+
+Abaixo está uma versão enxuta, mantendo tudo que realmente importa para a avaliação e que deve caber em cerca de **2min40–2min55**, dependendo do ritmo.
+
+# Pitch final enxuto — até 3 minutos
+
+## [PÁGINA 1 — CAPA]
+
+Olá, eu sou o **Murilo Favoretto Finardi** e meu objetivo foi responder uma pergunta: **se a Seazone fosse investir hoje em Itapema, qual imóvel eu compraria?**
+
+Minha recomendação é um **apartamento de 2 quartos em Meia Praia, para cerca de 6 hóspedes**, priorizando acesso à praia e, se economicamente viável, vista para o mar.
+
+---
+
+## [PÁGINA 2 — CONTEXTO]
+
+Para definir “melhor investimento”, eu não considerei apenas receita. Busquei o melhor equilíbrio entre **retorno, capital necessário, robustez da amostra e repetibilidade da tese**.
+
+---
+
+## [PÁGINA 3 — METODOLOGIA]
+
+A principal limitação foi que a base de preços não traz receita realizada, mas snapshots de preço e disponibilidade.
+
+Por isso, construí uma **receita-proxy de 77 dias**, usando noites indisponíveis como sinal de ocupação, sempre reconhecendo que também podem representar bloqueios do proprietário.
+
+A análise combinou mais de **4.400 imóveis de Airbnb**, **118 mil observações de preço**, mais de **8.200 anúncios de venda** e um painel comparável de **657 imóveis**.
+
+---
+
+## [PÁGINA 4 — MELHOR PERFIL]
+
+O principal trade-off foi entre 1 e 2 quartos em Meia Praia.
+
+O 1 quarto teve run-rate de **7,7%**, mas com apenas **14 imóveis comparáveis**.
+
+O 2 quartos ficou muito próximo, em **7,2%**, mas com **104 imóveis comparáveis**.
+
+Então eu sacrifico apenas **0,5 ponto percentual de retorno** em troca de uma evidência muito mais robusta.
+
+---
+
+## [PÁGINA 5 — LOCALIZAÇÃO]
+
+Em localização, **Meia Praia se destacou claramente**.
+
+A receita-proxy mediana foi de **R$ 19,5 mil contra R$ 14,2 mil no Centro**, cerca de **37% a mais**, além de uma ocupação **9,1 pontos percentuais superior**.
+
+---
+
+## [PÁGINA 6 — DRIVERS]
+
+Nos drivers, os atributos explicam melhor a diária do que a ocupação.
+
+Um quarto adicional esteve associado a **20,6% mais diária**, e vista para o mar a **9% mais diária e 5,7 pontos de ocupação**.
+
+Eu trato esses resultados como **associações úteis para decisão, não causalidade**.
+
+---
+
+## [PÁGINA 7 — COMPACTOS NO CENTRO]
+
+Sobre os compactos, minha conclusão tem uma nuance importante:
+
+**eu não refuto compactos para short-stay. Eu refuto “compactos no Centro” como a melhor tese com os dados disponíveis.**
+
+No mesmo produto de 1 quarto, **Meia Praia gera cerca de 33% mais receita-proxy**, com preço de compra praticamente igual.
+
+E studios têm amostra pequena demais para uma conclusão segura.
+
+---
+
+## [PÁGINA 8 — RECOMENDAÇÃO]
+
+Por isso, eu compraria o **2 quartos em Meia Praia**.
+
+O perfil tem compra mediana de **R$ 1,07 milhão**, receita-proxy de **R$ 16,4 mil em 77 dias**, ocupação de **48,7%** e run-rate bruto anualizado de **7,2%**.
+
+Esse número é um **run-rate, não um forecast**, e ainda não considera custos nem toda a sazonalidade.
+
+---
+
+## [PÁGINA 9 — IA + PRÓXIMOS PASSOS]
+
+A IA foi usada para investigar as bases, testar hipóteses e revisar criticamente as conclusões.
+
+Um exemplo foi perceber que seria incorreto tratar `Price_AV` como receita realizada e reformular a metodologia antes de seguir.
+
+Com mais uma semana, eu aprofundaria **micro-localização, sazonalidade, reserva versus bloqueio, retorno líquido e preço de compra comparável**.
+
+E investigaria especialmente **1 quarto em Meia Praia**, que apresentou um sinal forte, mas ainda com pouca amostra.
+
+Minha conclusão é simples:
+
+**hoje, a evidência favorece 2 quartos em Meia Praia porque oferece o melhor equilíbrio entre retorno e robustez da evidência.**
+
+### O que foi cortado sem perda de conteúdo
+
+Removi principalmente três tipos de coisa: repetições da recomendação, números secundários que já estão no slide e explicações que podem ser inferidas visualmente. Por exemplo, eu tiraria o payback de **13,8 anos da fala** — ele continua no PDF, mas não é essencial para defender a decisão em 3 minutos.
+
+Eu também não falaria todos os cinco próximos passos com explicação. Só nomeá-los já mostra o que você faria.
+
+A **página 7 eu não encurtaria muito mais**. Ela responde diretamente à tese que a Seazone pediu para você avaliar e provavelmente é um dos momentos mais importantes do vídeo.
+
+Minha sugestão é treinar essa versão mirando **2min40**. Se no ensaio der 2min55, ainda está seguro; se der exatamente 3 minutos, eu cortaria mais 1–2 frases porque qualquer pausa ou tropeço pode fazer você ultrapassar o limite.
+
+USUÁRIO
+Minha apresentação, pdf e números respondem às quatro perguntas do desafio de forma objetiva? Estou pronto para enviar.
+
+ASSISTENTE
+Sim. Considerando o PDF final e tudo o que validamos dos cálculos, **você responde às quatro perguntas do desafio de forma objetiva, defensável e com uma linha de raciocínio clara**.
+
+O enquadramento está bom porque você não tratou “melhor” como “maior receita”, mas como equilíbrio entre retorno, capital, robustez e repetibilidade. Isso sustenta bem a recomendação executiva de 2Q em Meia Praia.
+
+- **Pergunta 1 — melhor perfil:** respondida na página 4 com 2Q em Meia Praia, comparando explicitamente com 1Q e mostrando o trade-off entre 7,7% com n=14 e 7,2% com n=104. A escolha não é o maior número, é a alternativa mais robusta.
+- **Pergunta 2 — melhor localização:** respondida na página 5. Meia Praia tem R$ 19,5 mil de receita-proxy vs. R$ 14,2 mil no Centro, além de +9,1 p.p. de ocupação. O bootstrap e o Mann-Whitney dão uma camada extra de robustez.
+- **Pergunta 3 — características que explicam receita:** respondida na página 6. Você mostra efeitos em diária e ocupação e, principalmente, explicita que são associações e não causalidade.
+- **Pergunta 4 — o que compraria e retorno:** respondida na página 8. Produto, localização, preço, receita-proxy, retorno de 77 dias, run-rate anualizado e payback estão todos apresentados de forma direta.
+
+E você também atende a parte que poderia ser mais sensível da avaliação: **a tese dos compactos no Centro**. Sua posição é clara: não rejeita a lógica de compactos para short-stay, mas não confirma “studios/1Q no Centro” como melhor tese com os dados disponíveis.
+
+A página 9 também fecha muito bem porque mostra que você sabe onde a análise ainda pode evoluir: micro-localização, sazonalidade, diferenciação entre bloqueio e reserva, retorno líquido e comparáveis de compra.
+
+### Minha avaliação de prontidão
+
+**Análise e raciocínio: pronto.**  
+**Números principais: conferidos.**  
+**PDF: pronto para apresentação.**  
+**Tese de compactos: respondida.**  
+**Limitações: transparentes.**  
+**Recomendação: clara e defendível.**
+
+Antes de enviar, eu faria apenas uma checagem operacional final no repositório:
+
+1. vídeo com menos de 3 minutos e link público;
+2. link do vídeo na primeira linha do `README.md`;
+3. `README.md` explicando onde está cada entrega e como reproduzir a análise;
+4. `relatorio.md`;
+5. script/código da análise;
+6. PDF final correto;
+7. `ai-log/` com **a sessão completa em texto**, não somente um resumo;
+8. testar GitHub e vídeo em aba anônima.
+
+Se esses itens estiverem em ordem, **eu consideraria a entrega pronta para envio**. O mais importante agora é não continuar mexendo na tese por insegurança: ela está coerente com os dados e, sobretudo, você consegue explicar por que tomou essa decisão.
+
+USUÁRIO
+Preciso do log desta conversa cru/raw, com tudo que digitamos em txt. 100% do conteúdo.
+
+ASSISTENTE
+Vou gerar um `.txt` com **todo o conteúdo textual visível da conversa entre você e eu, sem resumir nem reescrever**. A única coisa que não pode entrar é conteúdo interno da plataforma — mensagens de sistema/desenvolvedor, chamadas de ferramentas e raciocínio privado — porque isso não faz parte do chat visível.
