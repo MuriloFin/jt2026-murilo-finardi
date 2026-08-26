@@ -1,0 +1,65 @@
+[PÁGINA 1 — CAPA]
+
+Olá, eu sou o Murilo Favoretto Finardi e meu objetivo foi responder: se a Seazone fosse investir hoje em Itapema, qual imóvel eu compraria?
+
+Minha recomendação é um apartamento de 2 quartos em Meia Praia, para cerca de 6 hóspedes.
+
+[PÁGINAS 2 E 3 — CONTEXTO + METODOLOGIA]
+
+Eu defini “melhor investimento” como equilíbrio entre retorno, capital necessário e robustez da evidência.
+
+A principal limitação dos dados é que a base de preços não traz receita realizada. Por isso, construí uma receita-proxy de 77 dias, usando indisponibilidade como sinal de ocupação, sabendo que também pode representar bloqueio do proprietário.
+
+O painel final teve 657 imóveis comparáveis.
+
+[PÁGINA 4 — MELHOR PERFIL]
+
+O principal trade-off foi entre 1 e 2 quartos em Meia Praia.
+
+O 1 quarto teve run-rate de 7,7%, mas apenas 14 imóveis comparáveis.
+
+O 2 quartos teve 7,2%, com 104 imóveis.
+
+Então eu sacrifico só 0,5 ponto percentual de retorno em troca de uma evidência muito mais robusta.
+
+[PÁGINA 5 — LOCALIZAÇÃO]
+
+Meia Praia também foi a melhor localização.
+
+A receita-proxy mediana foi 37% maior que no Centro, com ocupação 9,1 pontos percentuais superior.
+
+[PÁGINA 6 — DRIVERS]
+
+Nos drivers, um quarto adicional esteve associado a 20,6% mais diária.
+
+Vista para o mar apareceu associada a 9% mais diária e 5,7 pontos de ocupação.
+
+Eu trato esses resultados como associação, não causalidade.
+
+[PÁGINA 7 — COMPACTOS NO CENTRO]
+
+Sobre compactos, minha conclusão é importante:
+
+eu não refuto compactos para short-stay. Eu refuto “compactos no Centro” como a melhor tese com os dados disponíveis.
+
+No mesmo produto de 1 quarto, Meia Praia gera cerca de 33% mais receita-proxy, com preço de compra praticamente igual.
+
+Studios ainda têm amostra pequena demais para uma conclusão segura.
+
+[PÁGINA 8 — RECOMENDAÇÃO FINAL]
+
+Por isso, eu compraria o 2 quartos em Meia Praia.
+
+O perfil tem compra mediana de R$ 1,07 milhão, receita-proxy de R$ 16,4 mil em 77 dias e run-rate bruto anualizado de 7,2%.
+
+Esse valor é um run-rate, não um forecast, e não inclui todos os custos.
+
+[PÁGINA 9 — IA + FECHAMENTO]
+
+A IA foi usada para investigar as bases, testar hipóteses e revisar criticamente as conclusões.
+
+Um exemplo foi perceber que não seria correto tratar Price_AV como receita realizada e reformular a metodologia.
+
+Com mais tempo, eu aprofundaria sazonalidade, micro-localização, ocupação real e retorno líquido, especialmente no segmento de 1 quarto em Meia Praia.
+
+Minha conclusão é: hoje, a evidência favorece 2 quartos em Meia Praia pelo melhor equilíbrio entre retorno e robustez da evidência.
